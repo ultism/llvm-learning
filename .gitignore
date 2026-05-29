@@ -1,0 +1,53 @@
+# --- Compiled object / binary artifacts ---
+*.o
+*.obj
+*.ko
+*.a
+*.lib
+*.la
+*.lo
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# Built demo binaries (Makefile BIN targets, e.g. gelu_demo / dot_demo)
+*_demo
+
+# --- Build / output directories ---
+build/
+dist/
+bin/
+obj/
+out/
+cmake-build-*/
+
+# --- Debug / profiling ---
+*.dSYM/
+*.su
+*.idb
+*.pdb
+*.gcno
+*.gcda
+*.gcov
+perf.data
+perf.data.old
+*.prof
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.clangd/
+compile_commands.json
+
+# --- OS junk ---
+.DS_Store
+.DS_Store?
+Thumbs.db
+desktop.ini
