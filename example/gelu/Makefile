@@ -9,7 +9,7 @@ CFLAGS  = -O3 -march=native -Wall -Wextra -std=c11
 LDLIBS  = -lsleef -lm   # SLEEF provides the vectorised erf (Sleef_erff16_u10)
 
 SRC     = main.c gelu_scalar.c gelu_avx512.c
-BIN     = gelu_demo
+BIN     = gelu_demo.out
 
 $(BIN): $(SRC) gelu.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDLIBS)

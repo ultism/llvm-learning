@@ -3,7 +3,7 @@ CFLAGS  = -O3 -march=native -Wall -Wextra -std=c11
 LDLIBS  = -lm
 
 SRC = dot_scalar.c dot_avx512.c main.c
-BIN = dot_demo
+BIN = dot_demo.out
 
 all: $(BIN)
 

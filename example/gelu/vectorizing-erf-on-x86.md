@@ -126,7 +126,7 @@ clang-22 -O3 -march=native -ffast-math -fveclib=AMDLIBM -mprefer-vector-width=51
 
 # icx 自动用 SVML(Intel oneAPI)
 source /opt/intel/oneapi/setvars.sh
-icx -O3 -march=native gelu_svml_demo.c -lm -o demo   # _mm512_erf_ps → __svml_erff16
+icx -O3 -march=native gelu_svml_demo.c -lm -o gelu_svml_demo.out   # _mm512_erf_ps → __svml_erff16
 
 # 查 veclib 映射表 / 分发逻辑(LLVM 源码)
 #   llvm/include/llvm/Analysis/VecFuncs.def

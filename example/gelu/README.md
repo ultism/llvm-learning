@@ -56,7 +56,7 @@ sudo apt-get install -y libsleef-dev          # Ubuntu/Debian (universe)
 
 ```sh
 make        # clang -O3 -march=native ... -lsleef  (AVX-512 on Zen 4/5)
-make run    # build + ./gelu_demo
+make run    # build + ./gelu_demo.out
 ```
 
 Requires a CPU with **AVX-512F** (AMD Zen 4/5, Intel Skylake-X and later).

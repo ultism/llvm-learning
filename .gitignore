@@ -11,11 +11,12 @@
 *.dylib
 *.dll
 *.exe
-*.out
 *.app
 
-# Built demo binaries (Makefile BIN targets, e.g. gelu_demo / dot_demo)
-*_demo
+# Built executables. Convention: every compiled binary ends in .out
+# (Linux executables have no extension by default, so we impose one here).
+# See AGENTS.md. Makefile targets use BIN = <name>.out
+*.out
 
 # --- Build / output directories ---
 build/
