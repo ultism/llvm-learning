@@ -1,162 +1,60 @@
-# linalg.matmul —— 一个命名 op 怎么一层层降到 LLVM IR
+# matmul —— 同一个源，走不同 pass 路径降到 LLVM IR
 
-MLIR 这条线的第一个例子。前面 `llvm/` 那些例子是从 C 出发往下看 `.ll`/`.s`/`.ptx`/`.sass`；
-MLIR 在 LLVM IR **之上**又叠了好几层「方言（dialect）」,这里拿 `linalg.matmul` 当样本,
-**从高层方言一路降到我们熟的 `.ll`**,每降一层看清它变成了什么。
+`matmul_hello_world/` 走的是**一条**最朴素的下降链(named op → bufferize → scf 循环 → LLVM dialect → `.ll`),
+把每一层讲透。这个例子换个角度:**手写源还是那一个 `matmul.mlir`(从 hello_world 直接 cp 来),
+但故意走几条不同的 pass 路径降到 LLVM IR,看「选哪条路」对中间形态和最终 `.ll` 各有什么影响**。
 
-> **全程只有一个手写源 `matmul.mlir`(tensor 版)。其余 `.mlir`/`.ll` 全是 pass 生成的——尤其
-> memref 形态是 bufferization「生成」出来的,不是手写。** 用自编的 `mlir-opt` / `mlir-translate`
-> (`llvm-project/build/bin/`,`23.0.0git`,与 submodule 同源;见仓库根 [AGENTS.md](../../../../AGENTS.md) 的「MLIR」小节)。
+> 一条 pass 路径 = 一个子文件夹。每个子文件夹从 `../matmul.mlir` 出发,自带 Makefile + README,
+> 产物有两个:**特征中间形态**(`*.mlir`,这一层最能看出路径差别)和**最终 `matmul.ll`**。
+> 工具仍是自编 `mlir-opt`/`mlir-translate`(`23.0.0git`,与 submodule 同源,见根 [AGENTS.md](../../../../AGENTS.md))。
 
-## `linalg.matmul` 怎么写
+## 共同的前半段
 
-手写源是 **tensor(值语义)** 版:
+四条路径**开头都一样**:先 `--one-shot-bufferize` 把 tensor 换成 memref(这步、以及为什么 memref 是
+「生成」的,在 [`../matmul_hello_world/`](../matmul_hello_world/README.md) 里已讲透)。**分叉发生在「linalg 怎么变成循环」这一步**,
+之后再各自收尾(`memref → descriptor`、`func/arith/cf → llvm`、翻译成 `.ll`)。
 
-```mlir
-%0 = linalg.matmul ins(%A, %B : tensor<4x8xf32>, tensor<8x16xf32>)
-                   outs(%C : tensor<4x16xf32>) -> tensor<4x16xf32>
+## 四条路径
+
+| 子文件夹 | 分叉用的 pass | 特征中间形态 | 最终 `.ll` |
+|---|---|---|---|
+| [`scf_loops/`](scf_loops/) | `--convert-linalg-to-loops` | 三层 `scf.for`(k 在最内归约) | 标量 `fmul/fadd float`,89 行 |
+| [`affine_loops/`](affine_loops/) | `--convert-linalg-to-affine-loops` + `--lower-affine` | 三层 `affine.for`(下标是 affine_map) | **与 scf 字节相同** |
+| [`parallel_loops/`](parallel_loops/) | `--convert-linalg-to-parallel-loops` | `scf.parallel(m,n)` 套 `scf.for(k)` | **与 scf 字节相同** |
+| [`affine_vectorize/`](affine_vectorize/) | `--convert-linalg-to-affine-loops` + `--affine-super-vectorize` | `vector<8xf32>` + `vector.transfer_read/write` | **`<8 x float>` SIMD,123 行** |
+
+## 最重要的一条结论:三条标量路径的 `.ll` 完全一样
+
+实测 `diff`:`scf_loops`、`affine_loops`、`parallel_loops` 三者的 `matmul.ll` **逐字节相同**(都是 89 行)。
+
+为什么?**它们只是「在哪个方言里表达循环」不同,循环结构本身是同一个**——三层标量嵌套、k 做归约。
+一旦都降到 `cf` 基本块(`affine.for` 经 `--lower-affine` 拆成 arith+scf;`scf.parallel` 单线程降级被
+`--convert-scf-to-cf` 摊成顺序 CFG),抽象差别就被抹平,LLVM IR 自然收敛到同一份。
+
+这恰恰说明:
+
+- **选不同的循环方言,不会凭空改变生成的机器级代码**——`scf` vs `affine` vs `parallel` 的区别在于
+  「后续还能在这层做什么变换」(affine 有多面体分析、parallel 能接 OpenMP/GPU),而不是直接产出不同的 `.ll`。
+- **真正改变最终指令的是「调度」**——比如向量化。只有 `affine_vectorize` 那条的 `.ll` 变了样:
+  N 维按 `step 8` 切,算子升成 `vector<8xf32>`,落到 LLVM IR 就是 `fmul/fadd <8 x float>`、
+  A 的 `insertelement`+`shufflevector` 广播、B/C 的 `@llvm.masked.load/store.v8f32`。
+
+> 一句话:**pass 路径决定你「在哪一层、还能做哪些变换」;只有真正动了调度(向量化/分块)的变换,才会改写最终 `.ll`。**
+> 这正是 MLIR 把「语义(matmul)」和「调度(怎么跑)」分开的意义——换循环方言不改语义也不改代码,换调度才改代码。
+
+## 怎么跑
+
+```sh
+make all      # 顶层：把 4 个子文件夹的产物都生成出来
+make clean    # 清掉所有子文件夹的生成物
+# 或进单个子目录：cd scf_loops && make all
 ```
 
-- `ins` = 两个乘数;`outs` = **累加目标**,既是初值也是输出 —— 语义是 `C += A·B`,不是 `C = A·B`。
-- 形状 `A[4x8]·B[8x16]=C[4x16]`,即 `M=4, N=16, K=8`。
-- tensor 是值语义:不改输入,**产出一个新值 `%0`** 再 `return`。
-- 它**只声明「这是矩阵乘」,不规定怎么算**(循环序、分块、向量化留给后续 pass)。这正是 linalg 的价值。
+每个子目录的 README 只补「这条路径相对 scf 基线差在哪、中间形态长什么样」。逐层精讲见
+[`../matmul_hello_world/`](../matmul_hello_world/README.md)。
 
-memref(buffer)形态长这样——但它是后面 **bufferize 生成**的,不在手写源里:
+## 还能加什么路径
 
-```mlir
-linalg.matmul ins(%A, %B : memref<4x8xf32>, memref<8x16xf32>)
-              outs(%C : memref<4x16xf32>)        // 原地写 C，无产出值
-```
-
-## 文件
-
-| 文件 | 来历 | 内容 |
-|---|---|---|
-| `matmul.mlir` | **手写(唯一源)** | tensor 版命名 op |
-| `matmul.generic.mlir` | 生成 | 旁支:泛化成 `linalg.generic`(露出语义,仍 tensor) |
-| `matmul.bufferized.mlir` | 生成 | **① bufferize:tensor → memref** |
-| `matmul.loops.mlir` | 生成 | ② memref → `scf` 三层循环 |
-| `matmul.llvm-dialect.mlir` | 生成 | ③ 全程降到 LLVM dialect |
-| `matmul.ll` | 生成 | ④ 真正的 LLVM IR(接回 `llvm/` 那条线) |
-| `Makefile` | — | `generic`/`bufferize`/`loops`/`llvm`/`ll`/`artifacts`/`clean` |
-
-主链:`matmul.mlir ──bufferize──▶ matmul.bufferized.mlir ──loops/llvm/ll──▶`。
-`make artifacts` 一把重生成全部产物(都已入库);`make clean` 删所有生成物、只留 `matmul.mlir`。
-
----
-
-## 旁支:`linalg.matmul` 的真身（`matmul.generic.mlir`）
-
-`--linalg-generalize-named-ops`。`linalg.matmul` 五个字其实是下面这一整套的简写(仍是 tensor):
-
-```mlir
-#map  = affine_map<(d0, d1, d2) -> (d0, d2)>   // 取 A[m,k]
-#map1 = affine_map<(d0, d1, d2) -> (d2, d1)>   // 取 B[k,n]
-#map2 = affine_map<(d0, d1, d2) -> (d0, d1)>   // 取/写 C[m,n]
-linalg.generic {indexing_maps = [#map, #map1, #map2],
-                iterator_types = ["parallel", "parallel", "reduction"]}
-  ins(%A, %B) outs(%C) {
-^bb0(%in: f32, %in_0: f32, %out: f32):
-  %1 = arith.mulf %in, %in_0 : f32      // C[m,n] += A[m,k]*B[k,n]
-  %2 = arith.addf %out, %1   : f32      //   的内层一拍
-  linalg.yield %2 : f32
-}
-```
-
-三件事拼出矩阵乘的定义(迭代空间 `(d0,d1,d2)=(m,n,k)`):**三张 indexing map** = A/B/C 各自的下标公式;
-**iterator_types** `[parallel, parallel, reduction]` —— m、n 并行,k 是**归约维**(累加沿 k 走);
-**标量 body** = 内层那一拍 `mulf` 后 `addf` 到 `%out`。换 `linalg.matvec`/`conv_2d` 不过是换这套 map 和 iterator。
-
-> 泛化停在 tensor,不需要 bufferize——它只是把语义摊开看,没换语义模型。
-
----
-
-## 主链:四层下降,逐层对上
-
-### ① tensor → memref:bufferization（`matmul.bufferized.mlir`）
-
-`--one-shot-bufferize`(用 `identity-layout-map` 求干净的 `memref<MxNxf32>`)。**这一步才把值语义换成 buffer 语义,
-memref 在这里第一次出现**——之前的 `.mlir` 里根本没有 memref:
-
-```mlir
-func.func @matmul(%arg0: memref<4x8xf32>, %arg1: memref<8x16xf32>,
-                  %arg2: memref<4x16xf32>) -> memref<4x16xf32> {
-  linalg.matmul ins(%arg0, %arg1 : ...) outs(%arg2 : ...)   // 无产出值，原地写 %arg2
-  return %arg2 : memref<4x16xf32>
-}
-```
-
-对比 tensor 源,变化全在「值语义 → buffer 语义」:
-- `%0 = linalg.matmul … -> tensor` + `return %0`  ⟶  `linalg.matmul ins outs`(**无结果**)+ `return %arg2`。
-  那个 `%0` 不是被删了,而是**坍缩进了对 `%arg2` buffer 的原地写**——值语义里显式命名的结果,在 buffer 语义里变成副作用。
-- bufferize 分析后发现**可以直接复用 C 的 buffer 原地写**,于是没有 `alloc`/`copy`,直接把 `%arg2` 当结果还回去。
-- 若换成纯 `C=A·B`(用 `tensor.empty()` 造 C、不接外部 C),bufferize 就**被迫**插入 `memref.alloc()` + `linalg.fill`(清零)——
-  省下的工作不会凭空消失,只是推迟到这一步。
-
-### ② → `scf` 循环:抽象逐字落地（`matmul.loops.mlir`）
-
-`--convert-linalg-to-loops`。上面那套抽象**逐字**变成循环嵌套:
-
-| 来自 generic 的 | 循环里变成（`matmul.loops.mlir`） |
-|---|---|
-| 迭代空间 `(m,n,k)` | 三层 `scf.for`:`%arg3`∈[0,4)=m、`%arg4`∈[0,16)=n、`%arg5`∈[0,8)=k(`:8-10`) |
-| `reduction`(k) | **最内层**那层(累加沿它) |
-| `#map (m,k)` 取 A | `memref.load %arg0[%arg3, %arg5]`(`:11`) |
-| `#map1 (k,n)` 取 B | `memref.load %arg1[%arg5, %arg4]`(`:12`) |
-| `#map2 (m,n)` 取/写 C | `load` + `store %arg2[%arg3, %arg4]`(`:13,16`) |
-| body 的 `mulf`/`addf` | 原样的 `arith.mulf`/`arith.addf`(`:14-15`) |
-
-一句话:**indexing map 就是下标公式,iterator type 就是循环结构**。上下界 `4/16/8` 来自 memref 的静态维度。
-
-### ③ → LLVM dialect:memref 变成 descriptor struct（`matmul.llvm-dialect.mlir`）
-
-完整 pass 序列(见 Makefile 的 `TO_LLVM`):`linalg→scf` / `scf→cf`(基本块) / `memref→descriptor` /
-`func·arith·cf→llvm` / 收尾。两个关键变化:
-
-- 每个 `memref<MxNxf32>` 被摊平成一个 **descriptor struct** `(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)`
-  = (allocated ptr, aligned ptr, offset, sizes[2], strides[2]),靠一串 `llvm.insertvalue` 拼出来。
-- `scf.for` 没了,变成 `llvm.br` / `llvm.cond_br` + 基本块(结构化循环 → 控制流图)。
-
-### ④ → LLVM IR:接回 `.ll`（`matmul.ll`）
-
-`mlir-translate --mlir-to-llvmir`。这一步才**跨出 MLIR**,落到我们在 `llvm/` 里读过的同一种 `.ll`:
-
-```llvm
-define { ptr, ptr, i64, [2 x i64], [2 x i64] } @matmul(ptr %0, ... i64 %20) {   ; :4
-  br i1 %45, label %46, label %81                       ; :31 三层循环 → 三组 br i1（:31/:39/:47）
-  %56 = mul nuw nsw i64 %44, 8                           ; :51 行偏移:A 是 4x8，行步长 8
-  %66 = mul nuw nsw i64 %44, 16                          ; :61 行偏移:C 是 4x16，行步长 16
-  %70 = fmul float %59, %64                              ; :65 A[m,k]*B[k,n]
-  %71 = fadd float %69, %70                              ; :66 累加到 C[m,n]
-  ret { ptr, ptr, i64, [2 x i64], [2 x i64] } %42        ; :84 返回 C 的 descriptor（bufferize 复用了 C）
-```
-
-- **入参 21 个** = 3 个 memref × 7 字段(descriptor 被摊成标量参数)。
-- **返回值是个 struct** —— 因为函数返回一个 memref(③ 里那个 descriptor),tensor 源 `return %0` 一路活到这里,只是 `%0` 早已变成「C 的 buffer」。
-- 三层 `scf.for` → 三组 `br i1` 条件跳转(`:31/:39/:47`)。
-- `memref.load A[m,k]` 的二维下标 → 一维线性地址 `行号×行步长 + 列号`,所以满屏 `mul nuw nsw …, 8` / `…, 16`(8、16 正是 A、C 的行步长)。
-- 内层那拍 → `fmul float` / `fadd float`,和直接写 C 编出来的 `.ll` 已一模一样。
-
----
-
-## 读这些产物时盯什么
-
-- `linalg.generic` 的 **indexing_maps + iterator_types** —— named op 的语义全在这;`reduction` 标的就是归约维。
-- **bufferize 前后**:tensor 的 `%0`/`return %0` 怎么坍缩成 memref 的原地写 + `return %arg2`;能复用 C 就不 alloc,不能复用才长出 `alloc`+`fill`。**memref 是这一步生成的,不是天上掉的。**
-- `--convert-linalg-to-loops` 后,map 变下标、iterator 变循环嵌套 —— 抽象到循环的对应关系。
-- LLVM dialect 里的 **descriptor struct** `(ptr,ptr,i64,array,array)` —— memref 的运行时表示(指针+offset+sizes+strides)。
-- `.ll` 里 `@matmul` 的**参数个数**(memref 数 × 7)、**返回 struct**、满屏 `mul …, <行步长>` —— 二维 memref 怎么摊成一维地址、怎么按 ABI 传递。
-- 同一拍 `fmul`/`fadd` 一路从 `arith.mulf`/`addf` 活到 LLVM IR —— 计算本身没变,变的全是「怎么寻址、怎么循环、用哪块内存」的外壳。
-
-## 下一步能玩什么
-
-这里走的是**最朴素**的降法(直降三层 for)。linalg 真正的看家本事是**调度**:
-- `--linalg-tile`(分块)、`--linalg-vectorize`(向量化)—— 看同一个 `linalg.matmul` 怎么被调成 tiled / vectorized 的循环;
-- bufferization 本身也是一大块(in-place 分析、`alloc`/`copy` 插入、函数边界),值得单独开一个例子细看。
-- 这才是 MLIR 比直接手写 `.ll` 强的地方:语义(matmul)和调度(怎么跑)分开,各自独立变换。
-
-## 环境
-
-自编 `mlir-opt` / `mlir-translate`(`llvm-project/build/bin/`,LLVM `23.0.0git` + assertions,与 submodule 同 commit)。
-`make clean` 删全部生成物(只留 `matmul.mlir`),`make artifacts` 重生成。
+这版的自编 `mlir-opt` 里,linalg 层的 `--linalg-tile` / `--linalg-vectorize` 已不是独立 pass(挪进 transform 方言了)。
+能再玩的同类对比:`--affine-loop-tile`(在 affine 层分块)、`--linalg-block-pack-matmul`(matmul 专用的 block 重排)、
+`--convert-scf-to-openmp`(parallel 那条接 OpenMP 真并行)——每个都可再开一个子文件夹,套同样的「特征中间形态 + 最终 .ll」格式。

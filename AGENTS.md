@@ -18,7 +18,10 @@
 │   │       └── tma_half2/         #       TMA 异步读 + half2 打包加（仅 sm_120，不跨代比）
 │   └── mlir/                      #   MLIR：在 LLVM IR 之上的方言，逐层降到 .ll，按方言分类
 │       └── linalg/                #     linalg 方言
-│           └── matmul/            #       linalg.matmul：唯一 tensor 源，bufferize→scf 循环→LLVM dialect→.ll（memref 全是生成的）
+│           ├── matmul_hello_world/ #      hello world：一条最朴素链跑通（bufferize→scf 循环→LLVM dialect→.ll），逐层精讲
+│           ├── matmul/             #      同一个源走 4 条 pass 路径降到 .ll（scf/affine/parallel 标量殊途同归，仅向量化改 IR）
+│           │                       #        每条路径一个子文件夹，各存「特征中间形态 + 最终 .ll」
+│           └── matmul_gpu/         #      同一个源走 GPU：affine-for-to-gpu → gpu/nvvm → PTX/SASS（sm_120，m→block,n→thread）
 └── llvm-project/                  # submodule → 上游 https://github.com/llvm/llvm-project
 ```
 
