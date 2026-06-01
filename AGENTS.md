@@ -21,7 +21,11 @@
 │           ├── matmul_hello_world/ #      hello world：一条最朴素链跑通（bufferize→scf 循环→LLVM dialect→.ll），逐层精讲
 │           ├── matmul/             #      同一个源走 4 条 pass 路径降到 .ll（scf/affine/parallel 标量殊途同归，仅向量化改 IR）
 │           │                       #        每条路径一个子文件夹，各存「特征中间形态 + 最终 .ll」
-│           └── matmul_gpu/         #      同一个源走 GPU：affine-for-to-gpu → gpu/nvvm → PTX/SASS（sm_120，m→block,n→thread）
+│           └── matmul_gpu/         #      同一个源走 GPU，按用不用 tensor core 分两条大路（sm_120，PTX/SASS）
+│               ├── cuda_core/      #        标量(CUDA core)，按并行维怎么摊进网格再分两条子路 → 都出 FMUL/FADD
+│               │   ├── affine/     #          convert-affine-for-to-gpu：m→block, n→thread（4 block×16 线程）
+│               │   └── parallel/   #          官方 convert-parallel-loops-to-gpu：m,n→block（4×16 block×1 线程，每 block 1 线程）
+│               └── tensor_core/    #        张量核：f16+vector.contract→subgroup_mma→nvvm.wmma → HMMA（1 warp 1 块 16×16）
 └── llvm-project/                  # submodule → 上游 https://github.com/llvm/llvm-project
 ```
 

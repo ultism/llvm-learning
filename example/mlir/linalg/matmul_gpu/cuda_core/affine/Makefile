@@ -11,11 +11,11 @@
 #   make ptx        # ④ 序列化成 PTX（sm_120 虚拟 ISA），从 gpu.binary 抠成干净文本
 #   make sass       # ⑤ ptxas + cuobjdump → 真 Blackwell(sm_120) 机器码
 #   make artifacts  # 以上全部一把出（产物入库）
-#   make clean      # 删所有生成物，只留 matmul.mlir / extract_ptx.py
+#   make clean      # 删所有生成物，只留 matmul.mlir（PTX 提取器在 ../../extract_ptx.py）
 #
 # 链式依赖：每层都从上一层的产物出发，下降关系一目了然。
 
-MLIR_BIN  = ../../../../llvm-project/build/bin
+MLIR_BIN  = ../../../../../../llvm-project/build/bin
 OPT       = $(MLIR_BIN)/mlir-opt
 PTXAS     = /root/miniconda3/bin/ptxas
 CUOBJDUMP = /root/miniconda3/bin/cuobjdump
@@ -48,7 +48,7 @@ matmul.nvvm.mlir: matmul.gpu-module.mlir
 
 # ④ 给 kernel 贴 sm_120 目标、序列化成 PTX（format=isa），再抠出干净 PTX 文本
 matmul.ptx: matmul.nvvm.mlir
-	$(OPT) --nvvm-attach-target="chip=$(CHIP)" --gpu-module-to-binary="format=isa" $< | python3 extract_ptx.py > $@
+	$(OPT) --nvvm-attach-target="chip=$(CHIP)" --gpu-module-to-binary="format=isa" $< | python3 ../../extract_ptx.py > $@
 
 # ⑤ PTX → cubin（ptxas）→ SASS（cuobjdump）。cubin 是二进制中间物，不入库。
 matmul.sass: matmul.ptx
