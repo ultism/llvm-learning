@@ -17,15 +17,17 @@
 │   │       ├── vector_add/        #       逐元素向量加：对照 fp32/fp16/bf16 三层产物
 │   │       └── tma_half2/         #       TMA 异步读 + half2 打包加（仅 sm_120，不跨代比）
 │   └── mlir/                      #   MLIR：在 LLVM IR 之上的方言，逐层降到 .ll，按方言分类
-│       └── linalg/                #     linalg 方言
-│           ├── matmul_hello_world/ #      hello world：一条最朴素链跑通（bufferize→scf 循环→LLVM dialect→.ll），逐层精讲
-│           ├── matmul/             #      同一个源走 4 条 pass 路径降到 .ll（scf/affine/parallel 标量殊途同归，仅向量化改 IR）
-│           │                       #        每条路径一个子文件夹，各存「特征中间形态 + 最终 .ll」
-│           └── matmul_gpu/         #      同一个源走 GPU，按用不用 tensor core 分两条大路（sm_120，PTX/SASS）
-│               ├── cuda_core/      #        标量(CUDA core)，按并行维怎么摊进网格再分两条子路 → 都出 FMUL/FADD
-│               │   ├── affine/     #          convert-affine-for-to-gpu：m→block, n→thread（4 block×16 线程）
-│               │   └── parallel/   #          官方 convert-parallel-loops-to-gpu：m,n→block（4×16 block×1 线程，每 block 1 线程）
-│               └── tensor_core/    #        张量核：f16+vector.contract→subgroup_mma→nvvm.wmma → HMMA（1 warp 1 块 16×16）
+│       ├── linalg/                #     linalg 方言
+│       │   ├── matmul_hello_world/ #      hello world：一条最朴素链跑通（bufferize→scf 循环→LLVM dialect→.ll），逐层精讲
+│       │   ├── matmul/             #      同一个源走 4 条 pass 路径降到 .ll（scf/affine/parallel 标量殊途同归，仅向量化改 IR）
+│       │   │                       #        每条路径一个子文件夹，各存「特征中间形态 + 最终 .ll」
+│       │   └── matmul_gpu/         #      同一个源走 GPU，按用不用 tensor core 分两条大路（sm_120，PTX/SASS）
+│       │       ├── cuda_core/      #        标量(CUDA core)，按并行维怎么摊进网格再分两条子路 → 都出 FMUL/FADD
+│       │       │   ├── affine/     #          convert-affine-for-to-gpu：m→block, n→thread（4 block×16 线程）
+│       │       │   └── parallel/   #          官方 convert-parallel-loops-to-gpu：m,n→block（4×16 block×1 线程，每 block 1 线程）
+│       │       └── tensor_core/    #        张量核：f16+vector.contract→subgroup_mma→nvvm.wmma → HMMA（1 warp 1 块 16×16）
+│       └── vector/                #     vector 方言
+│           └── fma/               #       vector.fma → fmuladd → 后端选 vfmadd（路 A；strict FP / 无 FMA 对比）
 └── llvm-project/                  # submodule → 上游 https://github.com/llvm/llvm-project
 ```
 
@@ -108,7 +110,7 @@ make clean        # 清理产物
     -DCMAKE_C_COMPILER=clang-22 -DCMAKE_CXX_COMPILER=clang++-22 \
     -DLLVM_ENABLE_LLD=ON -DLLVM_OPTIMIZED_TABLEGEN=ON \
     -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF
-  ninja -C build mlir-opt mlir-translate    # 要 JIT 执行再 ninja -C build mlir-runner
+  ninja -C build mlir-opt mlir-translate llc  # llc 给 vector/fma 那类「.ll→x86 汇编」用；要 JIT 再 ninja mlir-runner
   ```
   build 目录在 `llvm-project/build`，被 LLVM 自带 `.gitignore` 忽略，**不污染父仓库**。
 
